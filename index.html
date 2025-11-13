@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Expense Tracker — Local Only (localStorage)</title>
+  <style>
+    /* Minimal clean styles */
+    :root{--bg:#f6f8fb;--card:#fff;--accent:#2563eb;--muted:#6b7280;--danger:#dc2626}
+    *{box-sizing:border-box}
+    body{font-family:Inter,system-ui,Segoe UI,Roboto,Arial;margin:0;background:var(--bg);color:#111}
+    .wrap{max-width:980px;margin:22px auto;padding:18px}
+    header{display:flex;justify-content:space-between;align-items:center;gap:12px}
+    h1{margin:0;font-size:20px;color:var(--accent)}
+    .grid{display:grid;grid-template-columns:1fr 320px;gap:14px;margin-top:16px}
+    .card{background:var(--card);padding:14px;border-radius:10px;box-shadow:0 6px 18px rgba(16,24,40,0.06)}
+    form .row{display:flex;gap:8px;margin-bottom:8px}
+    input,select,textarea,button{padding:8px;border-radius:8px;border:1px solid #e6e9ef;font-size:14px}
+    button{cursor:pointer}
+    .btn{background:var(--accent);color:#fff;border:0}
+    .btn.secondary{background:#eef2ff;color:var(--accent);border:1px solid rgba(37,99,235,0.12)}
+    table{width:100%;border-collapse:collapse;margin-top:8px}
+    th,td{padding:8px;text-align:left;border-top:1px solid #f1f3f6}
+    .small{font-size:13px;color:var(--muted)}
+    .actions{display:flex;gap:8px;align-items:center}
+    .total{font-weight:700;margin-top:8px}
+    @media (max-width:900px){.grid{grid-template-columns:1fr}}
+    .modal{position:fixed;inset:0;background:rgba(4,6,11,0.4);display:none;align-items:center;justify-content:center}
+    .modal .box{background:var(--card);padding:14px;border-radius:10px;min-width:320px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Expense Tracker (local)</h1>
+        <div class="small">Data stored only in your browser (localStorage/cookie). Export to backup.</div>
+      </div>
+      <div class="actions">
+        <button id="exportCsv" class="btn secondary">Export CSV</button>
+        <button id="backupBtn" class="btn secondary">Backup JSON</button>
+        <button id="importBtn" class="btn secondary">Import</button>
+        <input id="importFile" type="file" accept=".json,.csv" style="display:none" />
+      </div>
+    </header>
+
+    <div class="grid">
+      <main class="card">
+        <form id="addForm" autocomplete="off">
+          <div class="row">
+            <input id="amount" type="number" step="0.01" placeholder="Amount (e.g. 120.50)" required />
+            <input id="category" type="text" placeholder="Category (Food, Transport...)" required />
+          </div>
+          <div class="row">
+            <input id="date" type="date" />
+            <input id="note" type="text" placeholder="Note (optional)" />
+          </div>
+          <div class="row">
+            <button id="addBtn" class="btn" type="submit">Add expense</button>
+            <button id="clearBtn" type="button" class="btn secondary">Clear</button>
+            <div id="formMsg" class="small" style="align-self:center"></div>
+          </div>
+        </form>
+
+        <div style="margin-top:12px">
+          <div class="small">Expenses</div>
+          <table id="table">
+            <thead><tr><th>Date</th><th>Amount</th><th>Category</th><th>Note</th><th></th></tr></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+      </main>
+
+      <aside class="card">
+        <div class="small">Filters</div>
+        <div style="margin-top:8px;display:flex;flex-direction:column;gap:8px">
+          <input id="start" type="date" />
+          <input id="end" type="date" />
+          <input id="filterCategory" type="text" placeholder="Category filter" />
+          <div style="display:flex;gap:8px">
+            <button id="applyFilters" class="btn secondary">Apply</button>
+            <button id="resetFilters" class="btn secondary">Reset</button>
+          </div>
+        </div>
+
+        <div style="margin-top:12px">
+          <div class="small">Showing</div>
+          <div id="count">0 items</div>
+        </div>
+        <div style="margin-top:8px">
+          <div class="small">Total</div>
+          <div id="total" class="total">₹0.00</div>
+        </div>
+
+      </aside>
+    </div>
+  </div>
+
+  <!-- Modal -->
+  <div id="modal" class="modal" role="dialog" aria-hidden="true">
+    <div class="box">
+      <h3>Edit</h3>
+      <form id="editForm">
+        <div class="row"><input id="editAmount" type="number" step="0.01" required /></div>
+        <div class="row"><input id="editDate" type="date" required /></div>
+        <div class="row"><input id="editCategory" type="text" required /></div>
+        <div class="row"><input id="editNote" type="text" /></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+          <button type="submit" class="btn">Save</button>
+          <button id="cancelEdit" type="button" class="btn secondary">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+<script>
+/* ---------- Local-only expense tracker (localStorage primary, cookie fallback) ---------- */
+
+/*
+ storage key: 'expenses_local_v1'
+ data shape: array of { id: number, amount: number, category: string, note: string, date: 'YYYY-MM-DD' }
+*/
+
+const STORAGE_KEY = 'expenses_local_v1';
+
+// --- tiny storage abstraction ---
+function canUseLocalStorage() {
+  try {
+    const k = '__ls_test__';
+    localStorage.setItem(k, k);
+    localStorage.removeItem(k);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function readCookie(name) {
+  const m = document.cookie.split('; ').find(row => row.startsWith(name + '='));
+  if (!m) return null;
+  return decodeURIComponent(m.split('=')[1] || '') || null;
+}
+function writeCookie(name, value) {
+  // expire in 365 days
+  const days = 365;
+  const d = new Date(Date.now() + days * 864e5).toUTCString();
+  document.cookie = `${name}=${encodeURIComponent(value)}; expires=${d}; path=/`;
+}
+
+function loadData() {
+  if (canUseLocalStorage()) {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    try { return JSON.parse(raw); } catch { return []; }
+  } else {
+    const raw = readCookie(STORAGE_KEY);
+    if (!raw) return [];
+    try { return JSON.parse(raw); } catch { return []; }
+  }
+}
+function saveData(arr) {
+  const s = JSON.stringify(arr);
+  if (canUseLocalStorage()) {
+    localStorage.setItem(STORAGE_KEY, s);
+  } else {
+    writeCookie(STORAGE_KEY, s);
+  }
+}
+
+/* ---------- Utilities ---------- */
+function uid() { return Date.now() + Math.floor(Math.random()*1000); }
+function todayISO() { return new Date().toISOString().split('T')[0]; }
+function fmt(n){ return Number(n).toFixed(2); }
+
+/* ---------- App state ---------- */
+let expenses = loadData();
+
+/* ---------- DOM refs ---------- */
+const addForm = document.getElementById('addForm');
+const amountEl = document.getElementById('amount');
+const categoryEl = document.getElementById('category');
+const dateEl = document.getElementById('date');
+const noteEl = document.getElementById('note');
+const formMsg = document.getElementById('formMsg');
+const tbody = document.getElementById('tbody');
+const totalEl = document.getElementById('total');
+const countEl = document.getElementById('count');
+
+const startEl = document.getElementById('start');
+const endEl = document.getElementById('end');
+const filterCategory = document.getElementById('filterCategory');
+const applyFilters = document.getElementById('applyFilters');
+const resetFilters = document.getElementById('resetFilters');
+
+const exportCsvBtn = document.getElementById('exportCsv');
+const backupBtn = document.getElementById('backupBtn');
+const importBtn = document.getElementById('importBtn');
+const importFile = document.getElementById('importFile');
+
+const modal = document.getElementById('modal');
+const editForm = document.getElementById('editForm');
+let editingId = null;
+
+/* ---------- Rendering ---------- */
+function renderList(list) {
+  tbody.innerHTML = '';
+  let total = 0;
+  list.forEach(item => {
+    total += Number(item.amount);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${item.date}</td>
+      <td>₹${fmt(item.amount)}</td>
+      <td>${escapeHtml(item.category)}</td>
+      <td title="${escapeHtml(item.note||'')}">${escapeHtml(shorten(item.note||''))}</td>
+      <td style="text-align:right">
+        <button data-id="${item.id}" class="editBtn">Edit</button>
+        <button data-id="${item.id}" class="delBtn" style="margin-left:8px;background:#ef4444;color:#fff;border:0;padding:6px 8px;border-radius:6px">Delete</button>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+  totalEl.textContent = '₹' + fmt(total);
+  countEl.textContent = `${list.length} ${list.length===1 ? 'item' : 'items'}`;
+
+  // attach buttons
+  tbody.querySelectorAll('.delBtn').forEach(b => b.onclick = () => {
+    const id = Number(b.dataset.id);
+    if (!confirm('Delete this expense?')) return;
+    expenses = expenses.filter(x => x.id !== id);
+    saveData(expenses);
+    applyAndRender();
+  });
+  tbody.querySelectorAll('.editBtn').forEach(b => b.onclick = () => {
+    const id = Number(b.dataset.id);
+    openEdit(id);
+  });
+}
+
+function shorten(s, n=40){ return s.length>n ? s.slice(0,n-3)+'...' : s; }
+function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+/* ---------- Filters & apply ---------- */
+function getFiltered() {
+  const start = startEl.value;
+  const end = endEl.value;
+  const cat = filterCategory.value.trim().toLowerCase();
+  return expenses.filter(it => {
+    if (start && it.date < start) return false;
+    if (end && it.date > end) return false;
+    if (cat && it.category.toLowerCase().indexOf(cat) === -1) return false;
+    return true;
+  }).sort((a,b) => (b.date + b.id) < (a.date + a.id) ? -1 : 1);
+}
+
+function applyAndRender() {
+  const list = getFiltered();
+  renderList(list);
+}
+
+/* ---------- Form actions ---------- */
+addForm.onsubmit = e => {
+  e.preventDefault();
+  const amount = Number(amountEl.value);
+  const category = categoryEl.value.trim();
+  const date = dateEl.value || todayISO();
+  const note = noteEl.value.trim();
+  if (!amount || amount <= 0) { showMsg('Enter valid amount', false); return; }
+  if (!category) { showMsg('Enter category', false); return; }
+  const item = { id: uid(), amount: amount, category, note, date };
+  expenses.push(item);
+  saveData(expenses);
+  addForm.reset();
+  showMsg('Added', true);
+  applyAndRender();
+};
+
+document.getElementById('clearBtn').onclick = () => addForm.reset();
+
+applyFilters.onclick = () => applyAndRender();
+resetFilters.onclick = () => { startEl.value=''; endEl.value=''; filterCategory.value=''; applyAndRender(); };
+
+function showMsg(msg, ok=true) {
+  formMsg.textContent = msg;
+  formMsg.style.color = ok ? 'inherit' : 'var(--danger)';
+  setTimeout(()=> { if (formMsg.textContent === msg) formMsg.textContent = ''; }, 2200);
+}
+
+/* ---------- Edit modal ---------- */
+function openEdit(id) {
+  const it = expenses.find(x => x.id === id);
+  if (!it) return;
+  editingId = id;
+  document.getElementById('editAmount').value = it.amount;
+  document.getElementById('editDate').value = it.date;
+  document.getElementById('editCategory').value = it.category;
+  document.getElementById('editNote').value = it.note || '';
+  modal.style.display = 'flex';
+  modal.setAttribute('aria-hidden','false');
+}
+document.getElementById('cancelEdit').onclick = () => { modal.style.display='none'; editingId=null; }
+
+editForm.onsubmit = e => {
+  e.preventDefault();
+  const amt = Number(document.getElementById('editAmount').value);
+  const date = document.getElementById('editDate').value;
+  const cat = document.getElementById('editCategory').value.trim();
+  const note = document.getElementById('editNote').value.trim();
+  if (!amt || amt <= 0) { alert('Invalid amount'); return; }
+  if (!cat) { alert('Category required'); return; }
+  expenses = expenses.map(x => x.id === editingId ? { ...x, amount: amt, date, category: cat, note } : x);
+  saveData(expenses);
+  editingId = null;
+  modal.style.display = 'none';
+  applyAndRender();
+};
+
+/* ---------- Export / Import ---------- */
+function toCSV(rows) {
+  const header = ['id','amount','category','note','date'];
+  const lines = [header.join(',')];
+  rows.forEach(r => {
+    // naive csv escape: wrap fields with quotes and escape quotes
+    const line = header.map(h => {
+      let v = String(r[h] ?? '');
+      v = v.replace(/"/g,'""');
+      return `"${v}"`;
+    }).join(',');
+    lines.push(line);
+  });
+  return lines.join('\n');
+}
+
+exportCsvBtn.onclick = () => {
+  const rows = getFiltered();
+  const csv = toCSV(rows);
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'expenses.csv'; a.click();
+  URL.revokeObjectURL(url);
+};
+
+backupBtn.onclick = () => {
+  const json = JSON.stringify(expenses, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'expenses-backup.json'; a.click();
+  URL.revokeObjectURL(url);
+};
+
+importBtn.onclick = () => importFile.click();
+
+importFile.onchange = (ev) => {
+  const f = ev.target.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const text = reader.result;
+    // try JSON first
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        // basic validation: each item should have id, amount, date, category
+        const ok = parsed.every(it => it.id && it.amount && it.date && it.category);
+        if (!ok) { alert('Invalid JSON format'); return; }
+        // merge (keep existing ids)
+        parsed.forEach(it => {
+          // convert numeric if necessary
+          it.amount = Number(it.amount);
+          if (!it.id) it.id = uid();
+        });
+        // append and save
+        expenses = expenses.concat(parsed);
+        saveData(expenses);
+        applyAndRender();
+        alert('Imported JSON backup');
+        return;
+      }
+    } catch (e) { /* not JSON */ }
+
+    // try CSV
+    try {
+      const lines = text.split(/\r?\n/).filter(l=>l.trim());
+      const hdr = lines.shift().split(',').map(h=>h.replace(/(^"|"$)/g,'').trim());
+      const rows = lines.map(l => {
+        // basic CSV parse: split by comma outside quotes
+        const values = l.match(/("([^"]|"")*"|[^,]*)/g).map(s=>s.replace(/(^"|"$)/g,'').replace(/""/g,'"')).filter(Boolean);
+        const obj = {};
+        hdr.forEach((h,i)=> obj[h]=values[i] ?? '');
+        return obj;
+      });
+      rows.forEach(r => { r.amount = Number(r.amount); if(!r.id) r.id = uid(); });
+      expenses = expenses.concat(rows);
+      saveData(expenses);
+      applyAndRender();
+      alert('Imported CSV');
+    } catch (e) {
+      alert('Could not parse file');
+    }
+  };
+  reader.readAsText(f);
+  importFile.value = '';
+};
+
+/* ---------- Init ---------- */
+applyAndRender();
+</script>
+</body>
+</html>
